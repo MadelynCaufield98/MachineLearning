@@ -1,0 +1,256 @@
+---
+title: "ECON 412 - Project 2 - Part 1"
+author: A. Riad, B. Graf, M. Caufield, Q. He, Y. Luo
+date: "05-26-2021"
+output:
+  pdf_document:
+    toc: yes
+  fig_caption: yes
+  highlight: haddock
+  number_sections: yes
+  df_print: paged
+  html_document:
+    toc: yes
+    df_print: paged
+fontfamily: mathpazo
+fontsize: 11pt
+editor_options: null
+chunk_output_type: console
+---
+
+\    
+**Team Members:**
+
+* Ashtin Riad (805656966)
+* Benedikt Graf (105652212)
+* Madelyn Caufield (505657057)
+* Qiumeng He (305524290)
+* Yansha Luo (505646846)
+
+## Introduction
+
+This project is to fit several classification models, including linear and non-linear ones to a dataset about fetal health. We will fit 5 models to the data: logistic regression, LDA, QDA, KNN and K-means clustering. We will then use cross validation to evaluate each model's performance and select the preferred one.
+
+## Data Description
+
+"This dataset contains 2126 records of features extracted from Cardiotocogram exams, which were then classified by three expert obstetritians into 3 classes: Normal, Suspect, Pathological" (Kaggle, 2021).
+
+1 Dependent Variable:
+
+* Three classes of fetal health (Normal-1, Suspect-2, Pathological-3)
+
+21 Independent Variables
+
+* Baseline Fetal Heart Rate (FHR): Baseline Fetal Heart Rate (FHR)
+* accelerations: Number of accelerations per second
+* fetal_movement: Number of fetal movements per second
+* uterine_contractions: Number of uterine contractions per second
+* light_decelerations: Number of LDs per second
+* severe_decelerations: Number of SDs per second
+* prolongued_decelerations: Number of PDs per second
+* abnormal_short_term_variability: Percentage of time with abnormal short term variability
+* mean_value_of_short_term_variability: Mean value of short term variability
+* percentage_of_time_with_abnormal_long_term_variability:Percentage of time with abnormal long term variability
+* mean_value_of_long_term_variability: Mean value of long term variability
+* histogram_width: Width of the histogram made using all values from a record
+* histogram_min: Histogram minimum value
+* histogram_max: Histogram maximum value
+* histogram_number_of_peaks: Number of peaks in the exam histogram
+* histogram_number_of_zeroes: Number of zeroes in the exam histogram
+* histogram_mode: Hist mode
+* histogram_mean: Hist mean
+* histogram_median: Hist median
+* histogram_variance: Hist variance
+* histogram_tendency: Histogram trend
+* fetal_health:
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(nnet)
+library(stargazer)
+library(caret)
+library(pROC)
+library(FNN)
+```
+
+## Logistic regression
+
+The fetal health is used as the dependent variable and all other variables have been used as predictors. The variable fetal health has 3 levels, and hence, multinomial logistic regression would be applied here. Below is the summary of the model fit.
+
+The data has been divided into training and test set with 70-30\% split.
+
+```{r}
+myfile <- read.csv("fetal_health.csv", header = T)
+myfile$fetal_health <- as.factor(myfile$fetal_health)
+myfile$fetal_health <- relevel(myfile$fetal_health, ref = 1)
+
+set.seed(100)
+tr_samp <- sample(nrow(myfile), floor(0.7*nrow(myfile)))
+
+training <- myfile[tr_samp,]
+testing <- myfile[-tr_samp,]
+
+model_logi <- multinom(fetal_health ~., training)
+
+stargazer(model_logi, type = "text")
+
+```
+
+
+Now, we can use the model to look at the predictions on the test data.
+
+```{r}
+pred_logi <- predict(model_logi, testing)
+
+confusionMatrix(testing$fetal_health, pred_logi)
+
+logi_roc <- roc(testing$fetal_health,as.numeric(pred_logi))
+plot(logi_roc, print.auc=TRUE, auc.polygon=TRUE, grid=c(0.1, 0.2),grid.col=c("green", "red"), max.auc.polygon=TRUE,auc.polygon.col="skyblue", print.thres=TRUE,main='Logistic regression ROC curve')
+```
+
+The predictions look to be pretty good in the sense that the confusion matrix is diagonal heavy with accuracy close to 90%. However, due to class imbalance problem with this dataset, we may want to look at sensitivity which is low for Class 2 and good for Class 1 and Class 3.The Auc is 0.792
+
+
+## Linear Discriminant Analysis (LDA)
+
+Here, it was found that column 6 is constant through a group and it was decided to drop that variable since it will not be possible to fit LDA model with it.
+
+```{r}
+library(MASS)
+model_lda <- lda(fetal_health ~., training[,-6])
+
+pred_lda <- predict(model_lda, testing)
+
+confusionMatrix(testing$fetal_health, pred_lda$class)
+
+lda_roc <- roc(testing$fetal_health,as.numeric(pred_lda$class))
+plot(lda_roc, print.auc=TRUE, auc.polygon=TRUE, grid=c(0.1, 0.2),grid.col=c("green", "red"), max.auc.polygon=TRUE,auc.polygon.col="skyblue", print.thres=TRUE,main='LDA ROC curve')
+```
+
+The predictions from the LDA model is also decent, with accuracy close to 90% but a little bit lower than the multinomial regression. The sensitivity again is lower for class 2 but high for class 1 and class 3.The AUC is 0.776
+
+## Quadratic Discriminant Analysis(QDA)
+
+Logistic regression and LDA are both for linear boundary classifier.To find out whether a linear or non-linear model is more appropriate here, we will try the quadratic discriminant model.
+
+When simply run "model_qda <- qda(fetal_health ~.,training)",there will be an error of "rank deficiency in group 1". we suspect that this error might due to the shape of the dataset(too many indicator variables with insufficient samples),or due to the multicollinearity.so we need to select some indicator variables before we can run a QDA.
+We first delete the variables that are highly correlated and then use Learning Vector Quantization (LVQ) model to obtai the rank of attribute importance.
+
+```{r}
+library(mlbench)
+library(caret)
+correlationMatrix <- cor(myfile[,1:21])
+descrCorr <- cor(myfile[,1:21])
+highCorr <- findCorrelation(descrCorr, 0.8)
+myfile1 <- myfile[, -highCorr]
+set.seed(123)
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+model <- train(fetal_health~., data=myfile1, method="lvq", preProcess="scale", trControl=control)
+importance <- varImp(model, scale=FALSE)
+importance
+plot(importance)
+##run QDA model with 11 selected indicator variables
+model_qda <- qda(fetal_health~percentage_of_time_with_abnormal_long_term_variability+mean_value_of_short_term_variability+histogram_mode+abnormal_short_term_variability+mean_value_of_long_term_variability+accelerations+baseline.value+histogram_variance+prolongued_decelerations+light_decelerations+uterine_contractions,training)
+##use the model to make prediction on testing data and see how the model performs
+pred_qda <- predict(model_qda, testing)
+confusionMatrix(testing$fetal_health, pred_qda$class)
+##ROC curve and  AUC value
+QDA_roc <- roc(testing$fetal_health,as.numeric(pred_qda$class))
+plot(QDA_roc, print.auc=TRUE, auc.polygon=TRUE, grid=c(0.1, 0.2),grid.col=c("green", "red"), max.auc.polygon=TRUE,auc.polygon.col="skyblue", print.thres=TRUE,main='knn ROC curve')
+```
+
+The accuracy is 0.8245, which is lower than those of linear model(logistic regression and LDA),that might because there is fewer indicator variables in QDA. But the AUC is 0.817 and is higher than those of linear model. Although we prefer the model with higher AUC, which means the classification boundary is better because it closer to the Baye‘s one, due to the low out-of-sample accuracy and the problem of not able to having much indicator variables, we think QDA is not so appropriate for our data.
+
+## K-NearestNeighbor(KNN)
+
+KNN is a non-parametric model and can be applied to the data without considering its classification boundary shape. But it requires the variables to be normalized.
+
+```{r}
+##normalize the predictor variables
+training.norm<-training
+training.norm[, 1:21] <- sapply(training.norm[, 1:21],scale)
+testing.norm<-testing
+testing.norm[, 1:21] <- sapply(testing.norm[, 1:21],scale)
+##try different k 
+model4_k3 <- knn(train = training.norm[, 1:21], test = testing.norm[, 1:21], 
+          cl = training.norm[, 22], k = 3)
+confusionMatrix(model4_k3, testing.norm[, 22])
+
+model4_k5 <- knn(train = training.norm[, 1:21], test = testing.norm[, 1:21], 
+          cl = training.norm[, 22], k = 5)
+confusionMatrix(model4_k5, testing.norm[, 22])
+
+model4_k7 <- knn(train = training.norm[, 1:21], test = testing.norm[, 1:21], 
+          cl = training.norm[, 22], k = 7)
+confusionMatrix(model4_k7, testing.norm[, 22])
+
+model4_k9 <- knn(train = training.norm[, 1:21], test = testing.norm[, 1:21], 
+          cl = training.norm[, 22], k = 9)
+confusionMatrix(model4_k9, testing.norm[, 22])
+
+##choose k=5 as the preferred model
+model_knn <- knn(train = training.norm[, 1:21], test = testing.norm[, 1:21], 
+          cl = training.norm[, 22], k = 5)
+confusionMatrix(model_knn, testing.norm[, 22])
+
+##ROC curve and  AUC value
+knn_roc <- roc(testing.norm$fetal_health,as.numeric(model_knn))
+plot(knn_roc, print.auc=TRUE, auc.polygon=TRUE, grid=c(0.1, 0.2),grid.col=c("green", "red"), max.auc.polygon=TRUE,auc.polygon.col="skyblue", print.thres=TRUE,main='knn ROC curve')
+```
+
+For KNN model,we tried different k values and chose k=5 as the preferred one. The model has a very nice accuracy of 89.5%,which is higher than the logistic regression's and the LDA's. The AUC is 0.801.
+
+## K-means clustering algorithm
+
+K-means clustering algorithm is to classify the data into several clusters,so that these clusters have minimal within group variation(inter-cluster similarity).
+We would decide the number of clusters(k) by looking at the within group sum of squares of different clusters.
+
+```{r}
+library(cluster)
+library(rattle)
+library(NbClust)
+myfile.norm<-myfile
+myfile.norm[,1:21]<-sapply(myfile.norm[, 1:21],scale)
+df_kmeans<-myfile.norm
+library(NbClust)
+set.seed(2)
+wssplot <- function(data, nc=15, seed=1234){
+                  wss <- (nrow(data)-1)*sum(apply(data,2,var))
+                      for (i in 2:nc){
+                set.seed(seed)
+                    wss[i] <- sum(kmeans(data, centers=i)$withinss)}
+              plot(1:nc, wss, type="b", xlab="Number of Clusters",
+                            ylab="Within groups sum of squares")
+              wss
+       }
+wssplot(df_kmeans)
+## it is indicated that 4 clusters will be more appropriate 
+set.seed(2)
+model_kmeans<- kmeans(df_kmeans, 4)
+summary(model_kmeans)
+##show which cluster does each sample belong to 
+model_kmeans$cluster
+##show the size of each cluster
+model_kmeans$size
+##show the clusters produced by the model against the actual 3 types of fetal health
+table(myfile.norm$fetal_health, model_kmeans$cluster)
+## we can try to run a model with 3 clusters 
+## to see if the model can classify the data into 3 types based on the fetal health types. 
+model_kmeans1<- kmeans(testing.norm[,1:21], 3)
+model_kmeans1$cluster<-factor(model_kmeans1$cluster)
+confusionMatrix(model_kmeans1$cluster, testing.norm[, 22])
+kmeans_roc <- roc(testing.norm$fetal_health,as.numeric(model_kmeans1$cluster))
+```
+
+Based on the result,this k-means model is not classifying the data so well based on the 3 types of fetal health, thus it is not suitable for our data and the objective of fetal health classification.
+
+## Conclusion
+
+We fit our data with 5 models:logistic regression,LDA,QDA,KNN and K-means clustering. The first two model are linear, and the rest are non-linear(the shape of classification boundary does not matter with KNN and K-means). We use cross validation to evaluate the model performance,from which we could see the out-of-sample accuracy. Also we draw the ROC curve,from which we could see the AUC(area under curve).Comparing the results,we think the KNN model is the best fit for our data,with the accuracy of 0.895 and the AUC of 0.801,meaning that it has a nice predicting power on new data and it produces a classification boundary that is more closer to the Baye's one(the true boundary)
+
+## Reference
+[1]Fetal Health Classification.https://www.kaggle.com/andrewmvd/fetal-health-classification?select=fetal_health.csv
+
+[2]https://rpubs.com/violetgirl/201598
+
+[3]Randall R. Rojas. Econ412 lecture slides

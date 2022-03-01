@@ -1,0 +1,114 @@
+---
+title: "ECON 412 - Project 1"
+author: "Benedikt Graf (105652212); Madelyn Caufield (ID#); Qiumeng He (305524290), Yansha Luo (505646846)" 
+date: "04-30-2021"
+fontfamily: mathpazo
+output:
+  pdf_document:
+    toc: true
+  fig_caption: yes
+  highlight: haddock
+  number_sections: true
+  df_print: paged
+fontsize: 11pt
+editor_options:
+chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+# Importing libraries
+library(e1071) # Naive Bayes
+library(dplyr) # data wrangling
+library(tidyr)
+#install.packages("naniar")
+library(naniar) # to designate NA
+library(caret) # for performance evaluation
+library(gains) # lift chart
+options(scipen=999)
+```
+
+"This file concerns credit card applications.  All attribute names and values have been changed to meaningless symbols to protect confidentiality of the data.
+This dataset is interesting because there is a good mix of attributes -- continuous, nominal with small numbers of values, and nominal with larger numbers of values. There are also a few missing values."
+
+
+```{r}
+# Loading data
+credit.df <- read.csv("crx.data")
+
+# Designating "?" as NA
+credit.df <- credit.df %>% replace_with_na_all(condition = ~.x == "?")
+# Dropping Missing Values
+# We could do something else with NA
+credit.df <- credit.df %>% drop_na()
+
+# Renaming dependent variable
+names(credit.df)[names(credit.df) == '+'] <- 'status'
+credit.df$status[credit.df$status=="+"] <- "approved"
+credit.df$status[credit.df$status=="-"] <- "denied"
+
+# Assigning some columns numeric type
+credit.df$x30.83 <- as.numeric(as.character(credit.df$x30.83))
+credit.df$x00202 <- as.numeric(as.character(credit.df$x00202))
+
+# Standardizing continous columns 
+# Not necessary (https://stats.stackexchange.com/questions/254723/standardisation-in-naive-bayes)
+#credit.df <- credit.df %>% mutate_each_(list(~scale(.) %>% as.vector),
+#                                  vars = c("X30.83", "X0", "X1.25", "X0.1", "X00202"))
+
+# Designate status as factor
+credit.df$status <- as.factor(credit.df$status)
+
+head(credit.df)
+```
+
+```{r}
+# Create training and testing sets
+#selected.var <- c(10, 1, 8, 4, 2, 13)
+train.index <- sample(c(1:dim(credit.df)[1]), dim(credit.df)[1]*0.6)  
+train.df <- credit.df[train.index,]
+test.df <- credit.df[-train.index,]
+```
+
+```{r}
+# Run naive bayes: Conditional Probabilities which can be computed directly from the data
+credit.nb <- naiveBayes(status ~ ., data = train.df)
+credit.nb
+```
+
+```{r}
+# Evaluate Performance
+
+# Training
+pred.class <- predict(credit.nb, newdata = train.df)
+confusionMatrix(pred.class, as.factor(train.df$status))
+
+# Validation
+pred.class <- predict(credit.nb, newdata = test.df)
+confusionMatrix(pred.class, test.df$status)
+```
+
+```{r}
+# Predict Probabilities
+
+pred.prob <- predict(credit.nb, newdata = test.df, type = "raw")
+## predict class membership
+pred.class <- predict(credit.nb, newdata = test.df)
+df <- data.frame(actual = test.df$status, predicted = pred.class, pred.prob)
+```
+
+
+
+```{r}
+# Getting an error here :(
+# We will cover 'Lift Charts' later in the course
+gain <- gains(ifelse(test.df$status=="denied",1,0), pred.prob[,1], groups=100)
+
+# Plot the Lift Chart
+plot(c(0,gain$cume.pct.of.total*sum(test.df$status=="denied"))~c(0,gain$cume.obs), 
+     xlab="# cases", ylab="Cumulative", main="", type="l")
+lines(c(0,sum(test.df$status=="denied"))~c(0, dim(test.df)[1]), lty=2)
+
+```
+
+
+

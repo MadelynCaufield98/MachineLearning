@@ -1,0 +1,586 @@
+---
+title: "ECON 412 - Project 2 - Part 2"
+author: A. Riad, B. Graf, M. Caufield, Q. He, Y. Luo
+date: "05-26-2021"
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+  fig_caption: yes
+  highlight: haddock
+  number_sections: yes
+  df_print: paged
+  pdf_document:
+    toc: yes
+fontfamily: mathpazo
+fontsize: 11pt
+editor_options: null
+chunk_output_type: console
+---
+
+\    
+*Team Members:*
+
+* Ashtin Riad (805656966)
+* Benedikt Graf (105652212)
+* Madelyn Caufield (505657057)
+* Qiumeng He (305524290)
+* Yansha Luo (505646846)
+
+```{r setup, include=FALSE}
+## Importing libraries
+
+#install.packages("fastDummies")
+library(e1071) # Naive Bayes
+library(dplyr) # data wrangling
+library(tidyr)
+library(naniar) # to designate NA
+library(caret) # for performance evaluation
+library(gains) # lift chart
+library("mice")
+library(glmnet)
+library(psych)   # for function tr() to compute trace of a matrix
+library(tidyverse)    # data manipulation and visualization
+library(kernlab)      # SVM methodology
+library(e1071)        # SVM methodology
+library(ISLR)         # contains example data set "Khan"
+library(RColorBrewer) # customized coloring of plots
+library(vip)
+
+options(scipen=999)
+```
+
+## Introduction and Data Wrangling
+
+### Introduction
+
+The model is overfitting when the model is too complex due to the excessive noise learned. For example, when we use a more complex model to fit the data, often the training set performs well and the test set performs poorly. Such a complex model has low bias but high variance and cannot be extended to other "untrained" datasets. One way to improve the models generalizability is to use regularization to reduce the complexity of the model. By introducing a priori knowledge, the complexity of the model can be restrained to a certain extent, and the model can be learned in a predefined model framework.
+
+The regularization term can be the norm of the model parameter vector, such as L1 and L2. L1  and L2 regularization can be regarded as penalty terms added to the loss function. The so-called "penalty" limits some parameters in the loss function. L2 regularization (Ridge Regression), L1 regularization (LASSO，Least Absolute Shrinkage and Selection Operator) and L1 and L2 combination (Elastic Net) are widely used. The aim of our project is to apply LASSO, Ridge, Elastic Net, PCA, and SVM models to the "Hitters" dataset and compare the models.
+
+### Data Description
+
+"This dataset is part of the R-package ISLR and is used in the related book by G. James et al. (2013) 'An Introduction to Statistical Learning with applications in R'. ... The salary data were originally from Sports Illustrated, April 20, 1987." (Kaggle, 2018) The related statistics were obtained from The 1987 Baseball Encyclopedia Update (Collier Books, Macmillan Publishing Company, New York).The data consists of 322 obsevrations of  major league players. All of the variables in the dataset are listed below:
+
+1 Dependent Variable:
+
+* Salary: 1987 annual salary on opening day in thousands of dollars
+
+19 Independent Variables:
+
+* AtBat: Number of times at bat in 1986
+* Hits: Number of hits in 1986
+* HmRun: Number of home runs in 1986
+* Runs: Number of runs in 1986
+* RBI: Number of runs batted in in 1986
+* Walks: Number of walks in 1986
+* Years: Number of years in the major leagues
+* CAtBat: Number of times at bat during his career
+* CHits: Number of hits during his career
+* CHmRun: Number of home runs during his career
+* CRuns: Number of runs during his career
+* CRBI: Number of runs batted in during his career
+* CWalks: Number of walks during his career
+* League: A factor with levels A and N indicating player’s league at the end of 1986
+* Division: A factor with levels E and W indicating player’s division at the end of 1986
+* NewLeague: A factor with levels A and N indicating player’s league at the beginning of 1987
+* PutOuts: Number of put outs in 1986
+* Assists: Number of assists in 1986
+* Errors: Number of errors in 1986
+
+We obtained the dataset and variable descriptions from Kaggle (2018). 
+
+```{r}
+## Loading data
+
+setwd("/Users/madelyncaufield/Desktop/ECON412/Project_2")
+#setwd("/Users/HQM/Desktop/")
+#setwd("/Users/benedikt_2/Desktop")
+
+Hitters <- read.csv("Hitters.csv")
+head(Hitters)
+```
+
+```{r}
+## Exploratory data visualization
+
+library(ggplot2)
+num <- Hitters %>% select(-League, -Division, -NewLeague)
+ggplot(gather(num), aes(value)) + 
+    geom_histogram(bins = 15) + 
+    facet_wrap(~key, scales = 'free_x')
+```
+
+```{r include=FALSE}
+## Missing Values
+
+# Designating "?" as NA
+Hitters <- Hitters %>% replace_with_na_all(condition = ~.x == "?")
+
+colSums(is.na(Hitters))
+
+# Imputing missing values with Random Forest Imputation
+
+summary(Hitters$Salary)
+
+input_data = Hitters
+
+input_data$Salary = as.numeric(input_data$Salary)
+
+#Mice imputation
+input_data2 = Hitters
+
+input_data2$Salary = as.numeric(input_data2$Salary)
+
+my_imp = mice(input_data2, m =5, method = c("", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "rf", ""), maxit = 20, seed = 412)
+```
+
+```{r}
+#checking the numeric variable (Salary) to pick the best dataset with the imputed values. Looking for distribution close to that of the var w/ missing values
+my_imp$imp$Salary
+```
+
+```{r}
+#option 3 gave us values closest to the mean so we will select that dataset to be our official dataset
+Hitters = complete(my_imp,3)
+
+colSums(is.na(Hitters))
+```
+
+```{r}
+## Indicator Variables
+
+library(fastDummies)
+# Turning three columns into indicators
+results <- fastDummies::dummy_cols(Hitters, select_columns = c("League", "Division", "NewLeague"))
+# Removing columns that became indicators and extra indicators
+Hitters = subset(results, select = -c(League, Division, NewLeague, League_N, Division_W, NewLeague_N))
+```
+
+```{r}
+# classification salary
+# Hitters_new <- data.frame(Hitters, Salary_Classification=Hitters$Salary)
+Hitters$Salary_Classification <- Hitters$Salary
+for (i in 1: nrow(Hitters)) {
+  if (Hitters$Salary[i] < 400) {
+    Hitters$Salary_Classification[i] <- '1'
+  }
+  else if (Hitters$Salary[i] >= 400 && Hitters$Salary[i] < 600) {
+    Hitters$Salary_Classification[i] <- '2'
+  }
+  else {
+    Hitters$Salary_Classification[i] <- '3'
+  }
+}
+```
+
+The value of the variable "Salary" in the original data set is between 60 and 2500. In order to better implement SVM, wwe decided to add a column-"Salary_Classification". We set three classes according to the salary, if the salary<400, it is "1" in Salary_Classification; if the 600>salary>400, it is "2" in Salary_Classification;if the salary>600, it is "3" in Salary_Classification for future use in SVM.
+
+```{r}
+## Splitting the data into training and testing sets
+
+set.seed(412)    # seed for reproducibility
+
+inTraining <- createDataPartition(Hitters$Salary, p = 0.75, list = FALSE)
+training <- Hitters[ inTraining,]
+testing  <- Hitters[-inTraining,]
+
+y.train <- training %>% select(Salary) %>% scale(center = TRUE, scale = FALSE) %>% as.matrix()
+x.train <- training %>% select(-Salary,-Salary_Classification ) %>% as.matrix()
+y.test <- testing %>% select(Salary) %>% scale(center = TRUE, scale = FALSE) %>% as.matrix()
+x.test <- testing %>% select(-Salary, -Salary_Classification) %>% as.matrix()
+```
+
+## LASSO
+
+Lasso performs variable selection and regularization to enhance prediction accuracy. Lasso combined with Ridge is Elastic Net. We will evaluate these three models along with PCA and SVM to determine the best model for our data. Here, we call glmnet to fit a linear regression using k-fold cross validation to determine the optimal values for lambda. Alpha is set to 1 here in order to make sure we are running a lasso regresssion (alpha = 0 would make this Ridge). The predict function is then called, but we pass in the cross-validated model that was previously fitted. Lastly, we calculate mean squared error and R^2. These are the metrics we will use to compare models in the final discussion.
+
+```{r include=FALSE}
+set.seed(412)    # seed for reproducibility
+library(glmnet)  # for ridge regression
+library(dplyr)   # for data cleaning
+library(psych)   # for function tr() to compute trace of a matrix
+library(vip)
+library(ggplot2)
+library(pROC)
+```
+
+```{r}
+# Perform 10-fold cross-validation to select lambda ---------------------------
+lambdas_to_try <- 10^seq(-3, 5, length.out = 100)
+# Setting alpha = 1 implements lasso regression
+lasso_cv <- cv.glmnet(x.train, y.train, alpha = 1, lambda = lambdas_to_try,
+                      standardize = TRUE, nfolds = 10)
+# Plot cross-validation results
+plot(lasso_cv)
+```
+
+```{r}
+# Best cross-validated lambda
+lambda_cv <- lasso_cv$lambda.min
+# Fit final model, get its sum of squared residuals and multiple R-squared
+model_cv <- glmnet(x.train, y.train, alpha = 1, lambda = lambda_cv, standardize = TRUE)
+y_hat_cv <- predict(model_cv, newx = x.test)
+ssr_cv <- t(y.test - y_hat_cv) %*% (y.test - y_hat_cv)
+rsq_lasso_cv <- cor(y.test, y_hat_cv)^2
+mse = mean((y.test - y_hat_cv)^2)
+```
+
+```{r}
+lambda_cv
+```
+
+From the graph above lambda with the lowest MSE seems to be around 1 and we can confirm that by getting the exact minimum value (lambda = 0.97701).
+
+```{r}
+res <- glmnet(x.train, y.train, alpha = 1, lambda = lambdas_to_try, standardize = FALSE)
+plot(res, xvar = "lambda")
+legend("bottomright", lwd = 1, col = 1:6, legend = colnames(x.train), cex = .7)
+vip(res, num_features = 9, geom = "col")
+```
+
+The variables that shrink to 0 very quickly are the ones that would be the first to go (aka not indicative of the dependent variable). This is already done with the choice of lambda, however it is a nice visual to see the variables in action.
+
+```{r}
+rsq <- cbind("R-squared" = c(rsq_lasso_cv), "MSE" = c(mse))
+rownames(rsq) <- c("lasso cross_validated")
+print(rsq)
+```
+
+## RIDGE
+
+Ridge region can be used to deal with the following two types of problems: first, the number of data points is less than the number of variables; Second, there is collinearity among variables.
+When there is collinearity among variables, the coefficients obtained by least square regression are unstable and the variance is large. The reason is that the inverse matrix of the matrix obtained by multiplying the coefficient matrix X and its transpose matrix can not be obtained, and the problem can be solved by introducing the parameter lambda into the bridge region.
+
+```{r}
+X=x.train # Matrix, ohne Salary
+y=y.train
+```
+
+Here we introduced two ways to select best lambda: cross-validatio and AIC & BIC.
+
+cv.glmnet() function can help us to find the optimal lambda value as follows. 
+
+```{r}
+# Perform 10-fold cross-validation to select lambda ---------------------------
+lambdas_to_try <- 10^seq(-3, 5, length.out = 100)
+# Setting alpha = 0 implements ridge regression
+ridge_cv <- cv.glmnet(x.train, y.train, alpha = 0, lambda = lambdas_to_try,
+                      standardize = TRUE, nfolds = 10)
+ridge_cv
+optimal_lambda <- ridge_cv$lambda.min
+optimal_lambda
+```
+
+The optimal lambda value comes out to be 1.707353 and will be used to build the ridge regression model. 
+
+```{r}
+# Plot cross-validation results
+plot(ridge_cv)
+```
+We know as log lambda increases, MSE first decreases slightly and then increases rapidly from the plot above.
+
+```{r}
+# Best cross-validated lambda
+lambda_cv <- ridge_cv$lambda.min
+# Fit final model, get its sum of squared residuals and multiple R-squared
+model_cv <- glmnet(x.train, y.train, alpha = 0, lambda = lambda_cv, standardize = TRUE)
+y_hat_cv <- predict(model_cv, x.train)
+ssr_cv <- t(y.train - y_hat_cv) %*% (y.train - y_hat_cv)
+rsq_ridge_cv <- cor(y.train, y_hat_cv)^2
+```
+
+We can also choose lambda using AIC and BIC as follows.
+
+```{r}
+# Use information criteria to select lambda -----------------------------------
+X_scaled <- scale(x.train)
+aic <- c()
+bic <- c()
+for (lambda in seq(lambdas_to_try)) {
+  # Run model
+  model <- glmnet(x.train, y.train, alpha = 0, lambda = lambdas_to_try[lambda], standardize = TRUE)
+  # Extract coefficients and residuals (remove first row for the intercept)
+  betas <- as.vector((as.matrix(coef(model))[-1, ]))
+  resid <- y - (X_scaled %*% betas)
+  # Compute hat-matrix and degrees of freedom
+  ld <- lambdas_to_try[lambda] * diag(ncol(X_scaled))
+  H <- X_scaled %*% solve(t(X_scaled) %*% X_scaled + ld) %*% t(X_scaled)
+  df <- tr(H)
+  # Compute information criteria
+    aic[lambda] <- nrow(X_scaled) * log(t(resid) %*% resid) + 2 * df
+  bic[lambda] <- nrow(X_scaled) * log(t(resid) %*% resid) + 2 * df * log(nrow(X_scaled))
+}
+```
+
+```{r}
+# Plot information criteria against tried values of lambdas
+plot(log(lambdas_to_try), aic, col = "orange", type = "l",
+     ylim = c(4000, 5000), ylab = "Information Criterion")
+lines(log(lambdas_to_try), bic, col = "skyblue3")
+legend("bottomright", lwd = 1, col = c("orange", "skyblue3"), legend = c("AIC", "BIC"))
+# Optimal lambdas according to both criteria
+lambda_aic <- lambdas_to_try[which.min(aic)]
+lambda_bic <- lambdas_to_try[which.min(bic)]
+
+lambda_aic
+lambda_bic
+```
+Optimal lambdas according to AIC criteria is 954.5485 and Optimal lambdas according to BIC criteria is 100000.
+
+```{r}
+# Fit final models for train set, get their sum of squared residuals and multiple R-squared
+model_aic <- glmnet(x.train, y.train, alpha = 0, lambda = lambda_aic, standardize = TRUE)
+y_hat_aic <- predict(model_aic, x.train)
+ssrtrain_aic <- t(y.train - y_hat_aic) %*% (y.train - y_hat_aic)
+rsqtrain_ridge_aic <- cor(y.train, y_hat_aic)^2
+
+ssrtrain_aic
+rsqtrain_ridge_aic
+
+model_bic <- glmnet(x.train, y.train, alpha = 0, lambda = lambda_bic, standardize = TRUE)
+y_hat_bic <- predict(model_bic, x.train)
+ssrtrain_bic <- t(y.train - y_hat_bic) %*% (y.train - y_hat_bic)
+rsqtrain_ridge_bic <- cor(y.train, y_hat_bic)^2
+
+ssrtrain_bic
+rsqtrain_ridge_bic
+
+# Fit final models for test set
+model_aic <- glmnet(x.test, y.test, alpha = 0, lambda = lambda_aic, standardize = TRUE)
+ytest_hat_aic <- predict(model_aic, x.test)
+ssrtest_aic <- t(y.test - ytest_hat_aic) %*% (y.test - ytest_hat_aic)
+rsqtest_ridge_aic <- cor(y.test, ytest_hat_aic)^2
+
+ssrtest_aic
+rsqtest_ridge_aic
+
+model_bic <- glmnet(x.test, y.test, alpha = 0, lambda = lambda_bic, standardize = TRUE)
+ytest_hat_bic <- predict(model_bic, x.test)
+ssrtest_bic <- t(y.test - ytest_hat_bic) %*% (y.test - ytest_hat_bic)
+rsqtest_ridge_bic <- cor(y.test, ytest_hat_bic)^2
+
+ssrtest_bic
+rsqtest_ridge_bic
+```
+
+The above output shows that the sum of squared residuals and R-squared values for the ridge regression model_aic on the training data are 31019206 and 39 percent, respectively. For the test data, the results are 7022089 and 53.5 percent, respectively. The sum of squared residuals and R-squared values for the ridge regression model_bic on the training data are 47735630 and 36.7 percent, respectively. For the test data, the results are 13549825 and 48.9 percent, respectively. 
+
+```{r}
+# See how increasing lambda shrinks the coefficients --------------------------
+# Each line shows coefficients for one variables, for different lambdas.
+# The higher the lambda, the more the coefficients are shrinked towards zero.
+res <- glmnet(X, y, alpha = 0, lambda = lambdas_to_try, standardize = FALSE)
+plot(res, xvar = "lambda")
+legend("bottomright", lwd = 1, col = 1:6, legend = colnames(X), cex = .7)
+```
+
+Each line shows coefficients for one variables, for different lambdas. We can know the higher the lambda, the more the coefficients are shrinked towards zero.
+
+
+## ELASTIC NET
+
+Elastic Net combines the penalty terms of the Ridge and Lasso regularization and is therefore more flexible. In this model the parameter alpha regulates the penalty term. If alpha is set equal to 0, we have a Ridge Regression and if alpha is set equal to 1, we have a Lasso Regression. Alpha values between 0 and 1 represent combinations of the penalty terms. To find the best elastic net model, we calculate the out-of-sample (testing) MSE, SSR, and Rsquared with 100 different values of alpha. 
+
+```{r}
+set.seed(412)
+
+# List of alphas and lambda to test
+alphas_to_try <- round(seq(0, 1, length.out = 100),3)
+lambdas_to_try <- 10^seq(-3, 5, length.out = 100)
+
+# Train models with each alpha and append model to list
+model_list <- list()
+for (a in alphas_to_try) {
+  set.seed(412) # seed for reproducibility
+  
+  model <- paste0("alpha", a)
+  
+  model_list[[model]] <-
+    cv.glmnet(x.train, y.train, type.measure="mse", alpha=a, lambda=lambdas_to_try, 
+              standardize = TRUE,  nfolds = 10)
+}
+
+# Initialize  new dataframe to record results
+results <- data.frame()
+
+# Use testing data to predict values
+for (a in alphas_to_try) {
+  model <- paste0("alpha", a)
+  
+  y.test.hat <- predict(model_list[[model]], 
+      s=model_list[[model]]$lambda.min, newx=x.test)
+  
+  # Calculate metrics to compare
+  mse <- mean((y.test - y.test.hat)^2)
+  rsquared <- cor(y.test, y.test.hat)^2
+  ssr <- t(y.test - y.test.hat) %*% (y.test - y.test.hat)
+  
+  temp <- data.frame(model=model, alpha=a, mse=mse, ssr=ssr, rsquared=rsquared)
+  # Append results to dataframe
+  results <- rbind(results, temp)
+}
+
+colnames(results)[4] <- "ssr"
+colnames(results)[5] <- "rsquared"
+
+results <-results[order(-results$rsquared),]
+head(results)
+
+```
+
+```{r}
+
+#min_alpha <- results[which.min(results$mse),]$alpha
+min_alpha <- results[which.max(results$rsquared),]$alpha
+
+par(mar=c(5,6,5,5)+.2)
+
+plot(results$alpha, results$rsquared, pch=16, axes=FALSE, ylim=c(0.45,0.55), xlab="", ylab="", 
+   type="l",col="blue", main="Results with different values of Alpha")
+axis(2, ylim=c(0.3,0.55),col="blue",col.axis="blue", las=1)
+mtext("R Squared",side=2,line=3, col = "blue")
+box()
+
+par(new=TRUE)
+
+plot(results$alpha, results$mse,  xlab="", ylab="",
+    axes=FALSE, type="l", col="red")
+mtext("MSE",side=4,col="red",line=3.5) 
+axis(4, col="red",col.axis="red",las=1)
+
+
+legend("topright",legend=c("Rsquared","MSE"),
+  text.col=c("blue","red"),lty=c(1,1),col=c("blue","red"))
+
+```
+
+For these data, the MSE is lowest and the R Squared the highest when alpha is set to `min_alpha`. 
+Comparable results were obtained with 1,000 different values of alpha.
+
+```{r}
+alpha.min.fit <- cv.glmnet(x.train, y.train, alpha = min_alpha, lambda = lambdas_to_try, standardize = TRUE)
+
+y.hat.min <- 
+  predict(alpha.min.fit, s=alpha.min.fit$lambda.min, newx=x.test)
+
+
+min_mse <- mean((y.test - y.hat.min)^2)
+min_rsquared <- cor(y.test, y.hat.min)^2
+
+print(paste("MSE:", round(min_mse, 2)))
+print(paste("R Squared:", round(min_rsquared, 3)))
+
+vip(alpha.min.fit, num_features = 19, geom = "col")
+```
+
+## PCA
+
+PCA transforms numbers using correlation to take from a set of large dimensions and compress that into a smaller subset (principal compounds). The original data is remapped based on the variation within the data. Highly correlated data with a lot of dimensions is favorable for PCA. In simpler terms, it is dimensionality reduction.
+
+```{r}
+d = Hitters[, c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,18,19,20)]
+head(d)
+```
+
+```{r}
+pc = princomp(d, cor=TRUE, score=TRUE)
+summary(pc)
+```
+
+Comp.1 is about 38% of the variations of the data. Comp.2 expresses 22%. Comp.1 and Comp.1 accounts for 60% together. We can look up to Comp.6 to get a good look at the data. We will use 85% or more of the data as a rule of thumb here. 
+
+```{r}
+plot(pc)
+```
+
+```{r}
+plot(pc, type='l')
+```
+
+The elbow curve shows that there is not a big distinction between groupings. This is portrayed by the gradual decline of the variance. We will not consider any principal components from the points of the elbow (around Comp.6). If we use the standard deviation school of thought where standard deviation above 1 is "good", we would also land at Comp.6.
+
+```{r}
+biplot(pc)
+dim(d)
+```
+
+This is very busy because we have 322 observations. The black numbers are the observations. All the features seem to tend toward the same general direction, making it hard to tell which variables pertain to the variation.
+
+```{r}
+#how input dimensions have barring on principla component identified 
+pc$loadings
+```
+
+This is a reflection of how the dimensions contribute to each component. 
+
+```{r}
+training = training[, c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,18,19,20)]
+testing  = testing[, c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,18,19,20)]
+# conduct PCA on training dataset
+pca <- prcomp(training, retx=TRUE, center=TRUE, scale=TRUE)
+expl.var <- round(pca$sdev^2/sum(pca$sdev^2)*100) # percent explained variance
+```
+
+```{r}
+# prediction of PCs for validation dataset
+pred <- predict(pca, newdata=testing)
+pred
+```
+
+## SVM
+
+Support Vector Machines (SVM) are popularly and widely used for classification and prediction problems in machine learning. SVM is a common classification algorithm, and its core is linear classifier. If the data is indivisible in the current dimension, it can be mapped to a higher dimension.
+
+The advantage of SVM is that it uses the kernel function, and can provide classification models with high accuracy. At the same time, it can avoid over adaptation of models with the help of increasing direction, and we don't have to worry about problems such as local optimization and multicollinearity. However, the most important drawback of SVM algorithm is that the training and testing speed of the model is very slow, and the model processing time is long, so the algorithm is not suitable for large-scale data sets. In addition, the results of SVM are difficult to explain, how to determine the appropriate kernel function is also a difficult problem, and regularization is also a problem that users need to consider.
+
+By training SVM, users can determine kernel function, cost function and ganmma function. For the choice of kernel function, we choose linear and radical function and gamma function, we choose 1. Increasing the gamma value in the same city will increase the number of support vectors. For cost function, we choose cost = 10, and the regular direction is also constant. The larger the regular direction is, the smaller the boundary is.
+
+```{r}
+inTraining <- createDataPartition(Hitters$Salary_Classification, p = 0.75, list = FALSE)
+training <- Hitters[ inTraining,]
+testing  <- Hitters[-inTraining,]
+
+training$Salary_Classification = as.factor(training$Salary_Classification)
+testing$Salary_Classification = as.factor(testing$Salary_Classification)
+
+svmfit <- svm(Salary_Classification~ Hits+AtBat+HmRun+Runs+RBI+Walks+Years+CAtBat+CHits+CHmRun+CRuns+CWalks+PutOuts+Assists+Errors , data = training, kernel = "radial", cost = 10, gamma = 1)
+
+pre_svm <- predict(svmfit,newdata = testing)
+obs_p_svm = data.frame(prob=pre_svm,obs=testing$Salary_Classification)
+
+table(testing$Salary_Classification,pre_svm,dnn=c("actual","pred"))
+
+svm_roc <- roc(testing$Salary_Classification,as.numeric(pre_svm))
+plot(svm_roc, print.auc=TRUE, auc.polygon=TRUE, grid=c(0.1, 0.2),grid.col=c("green", "red"), max.auc.polygon=TRUE,auc.polygon.col="skyblue", print.thres=TRUE,main='SVM ROC kernel = radial')
+
+#ggplot(data = training, aes(x = Hits, y = AtBat, color = y, shape = y)) + 
+  #geom_point(size = 2) +
+  #scale_color_manual(values=c("skyblue3", "grey4","red3")) +
+  #theme(legend.position = "none")
+
+svmfit <- svm(Salary_Classification~ Hits+AtBat+HmRun+Runs+RBI+Walks+Years+CAtBat+CHits+CHmRun+CRuns+CWalks+PutOuts+Assists+Errors , data = training, kernel = "linear", cost = 10, gamma = 1)
+
+pre_svm <- predict(svmfit,newdata = testing)
+obs_p_svm = data.frame(prob=pre_svm,obs=testing$Salary_Classification)
+
+table(testing$Salary_Classification,pre_svm,dnn=c("actual","pred"))
+
+svm_roc <- roc(testing$Salary_Classification,as.numeric(pre_svm))
+plot(svm_roc, print.auc=TRUE, auc.polygon=TRUE, grid=c(0.1, 0.2),grid.col=c("green", "red"), max.auc.polygon=TRUE,auc.polygon.col="skyblue", print.thres=TRUE,main='SVM ROC kernel = linear')
+```
+
+According to the confusion matrix of the test set, our prediction result is relatively accurate, so we draw a roc plot and find AUC = 0.684 when kernel is radial and AUC = 0.622 when kernel is linear. This shows that changing the kernel has a great impact on the classification of data.The ROC value is generally between 0.5 and 1.0. The larger the value is, the higher the accuracy of model judgment is, that is, the closer to 1, the better. ROC = 0.5 indicates that there is no difference between the prediction ability of the model and the random results. Therefore, linear is a better choice for kernal for the data.
+
+## Discussion
+
+In conclusion, Lasso yielded an R^2 of approximately 48% with an MSE of 96662.85. Ridge yielded an AIC R^2 of 53.5% with a sum of squared residuals of 7022089 and BIC R^2 of 49% with a sum of squared residuals of 13549825. Between these two initial models, Ridge performs better than Lasso but not by very much. An Elastic Net model was then fit to the data and yielded an R^2 of 49.5% with and MSE of 93644.84. Ridge appears to slightly outperform Elastic Net, however, all three models are comparable. When selecting the best model, it is also important to account for the bias-variance trade-off. In terms of the bias, model prediction vs. true value, none of the models stand out as significantly worse than the rest. Especially between Lasso, Ridge, and Elastic Net where all values of R^2 are within a few percentage points of each other. A model with high variance would result in good performance on the training data, but high error rates on the testing data (Singh, 2018). In the Elastic Net model, the sum of square error is lower for the test data than the train data, indicating that too high of variance is not a problem here. The last model fit was SVM with a linear and radial kernel type. The linear kernel type yielded an AUC of 62.2%, while the radial kernel type yielded an AUC of 68.4%. The higher the AUC value, the stronger the differentiation ability of the model. After looking at the accuracies, measurement errors, and taking the bias-variance trade-off into account, we conclude that the SVM model with linear kernel performed  the best with our data.  
+
+## References 
+
+Games, G., Witten, D., Hastie, T., and Tibshirani, R. (2013) An Introduction to Statistical Learning with applications in R, www.StatLearning.com, Springer-Verlag, New York.
+
+"Hitters. Major League Baseball Data from the 1986 and 1987 seasons." Kaggle, 2018. https://www.kaggle.com/floser/hitters.
+
+Singh, Seema. “Understanding the Bias-Variance Tradeoff.” Medium, Towards Data Science, 9 Oct. 2018, towardsdatascience.com/understanding-the-bias-variance-tradeoff-165e6942b229. 
+
